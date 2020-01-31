@@ -27,6 +27,7 @@ import (
 )
 
 var pushGateway string
+var namespace string
 
 // promCmd represents the status command
 var promCmd = &cobra.Command{
@@ -70,6 +71,7 @@ var promCmd = &cobra.Command{
 func init() {
 	RootCmd.AddCommand(promCmd)
 	promCmd.Flags().StringVarP(&pushGateway, "pushgateway", "p", "", "URL of prometheus push gateway")
+	promCmd.Flags().StringVarP(&namespace, "namespace", "", "", "Namespace to use in prometheus")
 }
 
 func promPush(c *ecobee.Client, ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) {
@@ -93,8 +95,9 @@ func promPush(c *ecobee.Client, ts *ecobee.ThermostatSummary, t *ecobee.Thermost
 	for _, i := range gauges {
 		g := promauto.NewGauge(
 			prometheus.GaugeOpts{
-				Name: i.name,
-				Help: i.name,
+				Namespace: namespace,
+				Name:      i.name,
+				Help:      i.name,
 			},
 		)
 		g.Set(i.val)
@@ -102,15 +105,25 @@ func promPush(c *ecobee.Client, ts *ecobee.ThermostatSummary, t *ecobee.Thermost
 
 	sensorTemp := promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "sensor_temperature",
-			Help: "Description",
+			Namespace: namespace,
+			Name:      "sensor_temperature",
+			Help:      "Temperature",
 		},
 		[]string{"name"},
 	)
 	sensorOccupied := promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "sensor_occupied",
-			Help: "Description",
+			Namespace: namespace,
+			Name:      "sensor_occupied",
+			Help:      "Presense",
+		},
+		[]string{"name"},
+	)
+	humidity := promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "sensor_humidity",
+			Help:      "Humidity",
 		},
 		[]string{"name"},
 	)
@@ -126,6 +139,13 @@ func promPush(c *ecobee.Client, ts *ecobee.ThermostatSummary, t *ecobee.Thermost
 			if c.Type == "occupancy" {
 				g, _ := sensorOccupied.GetMetricWithLabelValues(s.Name)
 				g.Set(stringBoolToFloat(c.Value))
+			}
+			if c.Type == "humidity" {
+				t, err := strconv.ParseFloat(c.Value, 64)
+				if err == nil {
+					g, _ := humidity.GetMetricWithLabelValues(s.Name)
+					g.Set(t)
+				}
 			}
 		}
 	}
