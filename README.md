@@ -45,6 +45,29 @@ thermostat: <Thermostat ID>
 appid: <App ID>
 ```
 
+### Docker
+
+```
+make
+```
+
+### Kubernetes
+
+Create `config.yaml` in the current directory. Follow the Config section above.
+
+Create `authcache` by registering your application:
+
+```
+./go-ecobee status --config config.yaml --authcache authcache
+```
+
+Now, apply the kube.yaml
+
+```
+kubectl apply -f <(./gen-kube.yaml.sh)
+```
+
+
 ## CLI Usage
 
 ### Status

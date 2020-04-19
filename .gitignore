@@ -1,2 +1,6 @@
 *~
 \#*\#
+authcache
+config.yaml
+go-ecobee
+*.tmp
