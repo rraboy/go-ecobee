@@ -20,6 +20,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/robfig/cron"
 	"github.com/rspier/go-ecobee/ecobee"
 	"github.com/spf13/cobra"
 )
@@ -33,35 +34,12 @@ var promSvrCmd = &cobra.Command{
 	Long:  "prometheus metrics server.",
 	Run: func(cmd *cobra.Command, args []string) {
 		checkRequiredFlags()
-		c := client()
-
-		tsm, err := c.GetThermostatSummary(
-			ecobee.Selection{
-				SelectionType:          "thermostats",
-				SelectionMatch:         thermostat,
-				IncludeEquipmentStatus: true,
-			})
-		if err != nil {
-			glog.Exitf("error retrieving thermostat summary for %s: %v", thermostat, err)
-		}
-
-		var ts ecobee.ThermostatSummary
-		var ok bool
-
-		if ts, ok = tsm[thermostat]; !ok {
-			glog.Exitf("thermostat %s missing from ThermostatSummary", thermostat)
-		}
-
-		t, err := c.GetThermostat(thermostat)
-		if err != nil {
-			glog.Exitf("error retrieving thermostat %s: %v", thermostat, err)
-		}
 
 		if listenAddr == "" {
 			glog.Exit("required flag --listen missing")
 		}
 
-		promListen(c, &ts, t)
+		promListen()
 	},
 }
 
@@ -71,23 +49,41 @@ func init() {
 	promSvrCmd.Flags().StringVarP(&namespace, "namespace", "", "ecobee", "namespace to use in prometheus")
 }
 
-func promListen(c *ecobee.Client, ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) {
-
+func promListen() {
+	gaugesMap := make(map[string]prometheus.Gauge)
 	gauges := []struct {
 		name string
-		val  float64
+		val  func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64
 	}{
-		{"fan", boolToFloat(ts.EquipmentStatus.Fan)},
-		{"comp_cool1", boolToFloat(ts.EquipmentStatus.CompCool1)},
-		{"comp_cool2", boolToFloat(ts.EquipmentStatus.CompCool2)},
+		{"fan", func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64 {
+			return boolToFloat(ts.EquipmentStatus.Fan)
+		}},
+		{"comp_cool1", func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64 {
+			return boolToFloat(ts.EquipmentStatus.CompCool1)
+		}},
+		{"comp_cool2", func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64 {
+			return boolToFloat(ts.EquipmentStatus.CompCool2)
+		}},
 
-		{"aux_heat1", boolToFloat(ts.EquipmentStatus.AuxHeat1)},
-		{"aux_heat2", boolToFloat(ts.EquipmentStatus.AuxHeat2)},
-		{"aux_heat3", boolToFloat(ts.EquipmentStatus.AuxHeat3)},
+		{"aux_heat1", func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64 {
+			return boolToFloat(ts.EquipmentStatus.AuxHeat1)
+		}},
+		{"aux_heat2", func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64 {
+			return boolToFloat(ts.EquipmentStatus.AuxHeat2)
+		}},
+		{"aux_heat3", func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64 {
+			return boolToFloat(ts.EquipmentStatus.AuxHeat3)
+		}},
 
-		{"desired_heat", float64(t.Runtime.DesiredHeat) / 10.0},
-		{"desired_cool", float64(t.Runtime.DesiredCool) / 10.0},
-		{"temperature", float64(t.Runtime.ActualTemperature) / 10.0},
+		{"desired_heat", func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64 {
+			return float64(t.Runtime.DesiredHeat) / 10.0
+		}},
+		{"desired_cool", func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64 {
+			return float64(t.Runtime.DesiredCool) / 10.0
+		}},
+		{"temperature", func(ts *ecobee.ThermostatSummary, t *ecobee.Thermostat) float64 {
+			return float64(t.Runtime.ActualTemperature) / 10.0
+		}},
 	}
 	for _, i := range gauges {
 		g := prometheus.NewGauge(
@@ -97,7 +93,8 @@ func promListen(c *ecobee.Client, ts *ecobee.ThermostatSummary, t *ecobee.Thermo
 				Help:      i.name,
 			},
 		)
-		g.Set(i.val)
+		//g.Set(i.val)
+		gaugesMap[i.name] = g
 		prometheus.MustRegister(g)
 	}
 
@@ -131,28 +128,61 @@ func promListen(c *ecobee.Client, ts *ecobee.ThermostatSummary, t *ecobee.Thermo
 	)
 	prometheus.MustRegister(humidity)
 
-	for _, s := range t.RemoteSensors {
-		for _, c := range s.Capability {
-			if c.Type == "temperature" {
-				t, err := strconv.ParseFloat(c.Value, 64)
-				if err == nil {
-					g, _ := sensorTemp.GetMetricWithLabelValues(s.Name)
-					g.Set(t / 10.0)
+	cron := cron.New()
+	cron.AddFunc("30 * * * *", func() {
+		c := client()
+
+		tsm, err := c.GetThermostatSummary(
+			ecobee.Selection{
+				SelectionType:          "thermostats",
+				SelectionMatch:         thermostat,
+				IncludeEquipmentStatus: true,
+			})
+		if err != nil {
+			glog.Exitf("error retrieving thermostat summary for %s: %v", thermostat, err)
+		}
+
+		var ts ecobee.ThermostatSummary
+		var ok bool
+
+		if ts, ok = tsm[thermostat]; !ok {
+			glog.Exitf("thermostat %s missing from ThermostatSummary", thermostat)
+		}
+
+		t, err := c.GetThermostat(thermostat)
+		if err != nil {
+			glog.Exitf("error retrieving thermostat %s: %v", thermostat, err)
+		}
+
+		for _, s := range t.RemoteSensors {
+			for _, c := range s.Capability {
+				if c.Type == "temperature" {
+					t, err := strconv.ParseFloat(c.Value, 64)
+					if err == nil {
+						g, _ := sensorTemp.GetMetricWithLabelValues(s.Name)
+						g.Set(t / 10.0)
+					}
 				}
-			}
-			if c.Type == "occupancy" {
-				g, _ := sensorOccupied.GetMetricWithLabelValues(s.Name)
-				g.Set(stringBoolToFloat(c.Value))
-			}
-			if c.Type == "humidity" {
-				t, err := strconv.ParseFloat(c.Value, 64)
-				if err == nil {
-					g, _ := humidity.GetMetricWithLabelValues(s.Name)
-					g.Set(t)
+				if c.Type == "occupancy" {
+					g, _ := sensorOccupied.GetMetricWithLabelValues(s.Name)
+					g.Set(stringBoolToFloat(c.Value))
+				}
+				if c.Type == "humidity" {
+					t, err := strconv.ParseFloat(c.Value, 64)
+					if err == nil {
+						g, _ := humidity.GetMetricWithLabelValues(s.Name)
+						g.Set(t)
+					}
 				}
 			}
 		}
-	}
+		for _, i := range gauges {
+			gaugesMap[i.name].Set(i.val(&ts, t))
+		}
+		log.Println("Collected info")
+	})
+	cron.Start()
+
 	http.Handle("/metrics", promhttp.Handler())
 	log.Fatal(http.ListenAndServe(listenAddr, nil))
 }
