@@ -16,8 +16,6 @@ FROM alpine:3
 COPY --from=build_base /tmp/bin/go-ecobee /app/go-ecobee/go-ecobee
 
 WORKDIR /app/go-ecobee
-RUN adduser -h /app/go-ecobee -D -H -S go-ecobee
-USER go-ecobee
 VOLUME "/app/go-ecobee/.go-ecobee.yaml"
 VOLUME "/app/go-ecobee/.go-ecobee-authcache"
 ENTRYPOINT ["/app/go-ecobee/go-ecobee"]
